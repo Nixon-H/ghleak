@@ -27,6 +27,7 @@ jobs:
           password: ${{ secrets.PYPI_TOKEN }}
           packages-dir: python/dist
           verify-metadata: false
+          skip-existing: true
 
   go:
     runs-on: ubuntu-latest
