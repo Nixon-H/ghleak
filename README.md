@@ -33,10 +33,32 @@ Rotate at the issuer first (not in the file), then clean git history with `git-f
 
 ## Installation
 
+Two implementations available — Python and Go. Either is sufficient.
+
+### Python (PyPI)
+
 ```bash
-pip install -e .
+pip install ghleak
 # Requires: trufflehog binary in PATH
 ```
+
+Or from source: `pip install -e ./python`
+
+### Go (from source)
+
+```bash
+go install github.com/nixon-h/ghleak/go@latest
+# Binary will be at $GOPATH/bin/ghleak
+```
+
+Or clone and build:
+```bash
+git clone https://github.com/Nixon-H/ghleak.git
+cd ghleak/go
+go build -o ghleak .
+```
+
+**Requires:** `trufflehog` binary in `PATH` for both versions.
 
 Needs a GitHub token (set `GITHUB_TOKEN` env var) for commit message and diff fetching. Without one, rate limits are 60 req/hr — effectively unusable for archive scanning.
 
