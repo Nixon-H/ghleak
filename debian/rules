@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cd go && go build -buildvcs=false -o ../ghleak .
+
+override_dh_auto_clean:
+	rm -f ghleak
+
+override_dh_auto_test:
+	cd go && go vet -buildvcs=false ./... && go test ./...
