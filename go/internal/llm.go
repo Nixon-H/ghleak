@@ -19,6 +19,48 @@ type LLMBackend interface {
 	ClassifyBatch(messages []string) (map[int]Classification, error)
 }
 
+// doWithRetry executes an HTTP request with retries for 429/5xx/transport
+// errors, honoring Retry-After. Shared by the Gemini and Anthropic backends.
+func doWithRetry(client *http.Client, method, urlStr string, headers map[string]string,
+	body []byte, attempts int) ([]byte, int, error) {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		var rdr io.Reader
+		if body != nil {
+			rdr = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, urlStr, rdr)
+		if err != nil {
+			return nil, 0, err
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			sleepBackoff(i, "")
+			continue
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncateStr(string(data), 200))
+			sleepBackoff(i, resp.Header.Get("Retry-After"))
+			continue
+		}
+		return data, resp.StatusCode, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("request failed after retries")
+	}
+	return nil, 0, lastErr
+}
+
 // ── OpenAI-compatible backend ──────────────────────────────────────
 
 type OpenAIBackend struct {
@@ -189,9 +231,10 @@ func (b *OpenAIBackend) ClassifyBatch(msgs []string) (map[int]Classification, er
 // ── Gemini backend ─────────────────────────────────────────────────
 
 type GeminiBackend struct {
-	APIKey string
-	Model  string
-	Client *http.Client
+	APIKey   string
+	Model    string
+	Endpoint string // override for tests/self-hosted gateways
+	Client   *http.Client
 }
 
 func NewGeminiBackend(apiKey, model string) *GeminiBackend {
@@ -203,6 +246,14 @@ func NewGeminiBackend(apiKey, model string) *GeminiBackend {
 		Model:  model,
 		Client: &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+func (b *GeminiBackend) endpoint() string {
+	if b.Endpoint != "" {
+		return b.Endpoint
+	}
+	return fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
+		b.Model, b.APIKey)
 }
 
 type geminiRequest struct {
@@ -228,9 +279,6 @@ type geminiCandidate struct {
 func (b *GeminiBackend) classifyOne(msg string) (Classification, error) {
 	prompt := strings.Replace(OneShotPrompt, "{commit_message}", msg, 1)
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
-		b.Model, b.APIKey)
-
 	body := geminiRequest{
 		Contents: []geminiContent{
 			{Parts: []geminiPart{{Text: prompt}}},
@@ -242,16 +290,15 @@ func (b *GeminiBackend) classifyOne(msg string) (Classification, error) {
 		return Clean, fmt.Errorf("gemini marshal: %w", err)
 	}
 
-	httpReq, _ := http.NewRequest("POST", url, bytes.NewReader(data))
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := b.Client.Do(httpReq)
+	respData, status, err := doWithRetry(b.Client, "POST", b.endpoint(),
+		map[string]string{"Content-Type": "application/json"}, data, 4)
 	if err != nil {
-		return Clean, fmt.Errorf("gemini do: %w", err)
+		return Clean, fmt.Errorf("gemini request: %w", err)
 	}
-	defer resp.Body.Close()
+	if status != 200 {
+		return Clean, fmt.Errorf("gemini HTTP %d: %s", status, truncateStr(string(respData), 200))
+	}
 
-	respData, _ := io.ReadAll(resp.Body)
 	var geminiResp geminiResponse
 	if err := json.Unmarshal(respData, &geminiResp); err != nil {
 		return Clean, fmt.Errorf("gemini decode: %w", err)
@@ -280,9 +327,6 @@ func (b *GeminiBackend) ClassifyBatch(msgs []string) (map[int]Classification, er
 	batchText := strings.Join(parts, "\n---\n")
 	prompt := strings.Replace(BatchPrompt, "{messages}", batchText, 1)
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
-		b.Model, b.APIKey)
-
 	body := geminiRequest{
 		Contents: []geminiContent{
 			{Parts: []geminiPart{{Text: prompt}}},
@@ -294,16 +338,15 @@ func (b *GeminiBackend) ClassifyBatch(msgs []string) (map[int]Classification, er
 		return nil, fmt.Errorf("gemini batch marshal: %w", err)
 	}
 
-	httpReq, _ := http.NewRequest("POST", url, bytes.NewReader(data))
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := b.Client.Do(httpReq)
+	respData, status, err := doWithRetry(b.Client, "POST", b.endpoint(),
+		map[string]string{"Content-Type": "application/json"}, data, 4)
 	if err != nil {
-		return nil, fmt.Errorf("gemini batch do: %w", err)
+		return nil, fmt.Errorf("gemini batch request: %w", err)
 	}
-	defer resp.Body.Close()
+	if status != 200 {
+		return nil, fmt.Errorf("gemini batch HTTP %d: %s", status, truncateStr(string(respData), 200))
+	}
 
-	respData, _ := io.ReadAll(resp.Body)
 	var geminiResp geminiResponse
 	if err := json.Unmarshal(respData, &geminiResp); err != nil {
 		return nil, fmt.Errorf("gemini batch decode: %w", err)
@@ -320,9 +363,10 @@ func (b *GeminiBackend) ClassifyBatch(msgs []string) (map[int]Classification, er
 // ── Anthropic backend ──────────────────────────────────────────────
 
 type AnthropicBackend struct {
-	APIKey string
-	Model  string
-	Client *http.Client
+	APIKey   string
+	Model    string
+	Endpoint string // override for tests/self-hosted gateways
+	Client   *http.Client
 }
 
 func NewAnthropicBackend(apiKey, model string) *AnthropicBackend {
@@ -333,6 +377,21 @@ func NewAnthropicBackend(apiKey, model string) *AnthropicBackend {
 		APIKey: apiKey,
 		Model:  model,
 		Client: &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+func (b *AnthropicBackend) endpoint() string {
+	if b.Endpoint != "" {
+		return b.Endpoint
+	}
+	return "https://api.anthropic.com/v1/messages"
+}
+
+func (b *AnthropicBackend) headers() map[string]string {
+	return map[string]string{
+		"Content-Type":      "application/json",
+		"x-api-key":         b.APIKey,
+		"anthropic-version": "2023-06-01",
 	}
 }
 
@@ -371,21 +430,17 @@ func (b *AnthropicBackend) classifyOne(msg string) (Classification, error) {
 		return Clean, fmt.Errorf("anthropic marshal: %w", err)
 	}
 
-	httpReq, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(data))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", b.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := b.Client.Do(httpReq)
+	respData, status, err := doWithRetry(b.Client, "POST", b.endpoint(), b.headers(), data, 4)
 	if err != nil {
-		return Clean, fmt.Errorf("anthropic do: %w", err)
+		return Clean, fmt.Errorf("anthropic request: %w", err)
 	}
-	defer resp.Body.Close()
+	if status != 200 {
+		return Clean, fmt.Errorf("anthropic HTTP %d: %s", status, truncateStr(string(respData), 200))
+	}
 
-	respData, _ := io.ReadAll(resp.Body)
 	var anthropicResp anthropicResponse
 	if err := json.Unmarshal(respData, &anthropicResp); err != nil {
-		return Clean, nil
+		return Clean, fmt.Errorf("anthropic decode: %w", err)
 	}
 
 	if len(anthropicResp.Content) == 0 {
@@ -424,18 +479,14 @@ func (b *AnthropicBackend) ClassifyBatch(msgs []string) (map[int]Classification,
 		return nil, fmt.Errorf("anthropic batch marshal: %w", err)
 	}
 
-	httpReq, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(data))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", b.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := b.Client.Do(httpReq)
+	respData, status, err := doWithRetry(b.Client, "POST", b.endpoint(), b.headers(), data, 4)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic batch do: %w", err)
+		return nil, fmt.Errorf("anthropic batch request: %w", err)
 	}
-	defer resp.Body.Close()
+	if status != 200 {
+		return nil, fmt.Errorf("anthropic batch HTTP %d: %s", status, truncateStr(string(respData), 200))
+	}
 
-	respData, _ := io.ReadAll(resp.Body)
 	var anthropicResp anthropicResponse
 	if err := json.Unmarshal(respData, &anthropicResp); err != nil {
 		return nil, fmt.Errorf("anthropic batch decode: %w", err)

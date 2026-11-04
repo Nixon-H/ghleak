@@ -1,3 +1,17 @@
+ghleak (1.4.1-0kali1) kali-dev; urgency=medium
+
+  * LLM backends: retry/backoff now covers all providers, not just the
+    OpenAI-compatible one. Gemini and Anthropic classify + batch calls go
+    through a shared doWithRetry (429/5xx/transport, Retry-After aware,
+    cumulative backoff with jitter), and non-200 responses surface as errors
+    instead of silent empty/clean results.
+  * Testability: GeminiBackend/AnthropicBackend accept an Endpoint override;
+    new llm_test.go proves 429 retry, 500 retry, batch retry, and that
+    non-retryable 400 surfaces immediately.
+  * Version 1.4.1.
+
+ -- Nixon-H <nixon@example.com>  Thu, 05 Nov 2026 02:00:00 +0000
+
 ghleak (1.4.0-0kali1) kali-dev; urgency=medium
 
   * Go-only release: the parallel Python implementation (python/ tree, PyPI
