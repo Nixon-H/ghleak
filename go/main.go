@@ -252,6 +252,8 @@ Examples:
   ghleak scan
   ghleak --enterprise-only scan --hours 4
   ghleak --llm-key sk-... scan
+  ghleak --llm-provider opencode-go --llm-key oc_sk_... scan --hours 2
+  ghleak --llm-provider openai-compatible --llm-endpoint https://gateway/v1 --llm-key ... scan
   ghleak commit google/test-repo abc123
   ghleak url https://github.com/owner/repo.git abc123
 `)
