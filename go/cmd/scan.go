@@ -43,6 +43,7 @@ func RunScan(cfg ScanConfig) int {
 	report := internal.NewReport()
 
 	llm := initLLM(cfg.LLMProvider, cfg.LLMEndpoint, cfg.LLMKey, cfg.LLMModel)
+	ledger := internal.LoadUsage(internal.DefaultUsagePath())
 	classifier := internal.NewBatchClassifier(llm)
 	scanner := internal.NewTruffleHogScanner(cfg.OnlyVerified)
 	gh := internal.NewGitAPIClient(cfg.GitHubToken, cfg.GitAPIBase, cfg.ForgeType)
@@ -143,6 +144,14 @@ func RunScan(cfg ScanConfig) int {
 	report.Finish()
 
 	logLLMCache(llm)
+	if llm != nil {
+		ledger.Observe(llm.Stats())
+		if err := ledger.Save(); err != nil {
+			log.Printf("usage ledger save failed: %v", err)
+		} else {
+			log.Printf("usage tracked: %s", ledger.Path)
+		}
+	}
 	log.Printf("Summary: %d hours, %d events, %d resolved, %d suspicious, %d verified",
 		report.HoursScanned, totalPushes, report.CommitsSeen,
 		len(report.SuspiciousCommits), report.VerifiedCount)
@@ -159,6 +168,7 @@ func RunMonitor(cfg ScanConfig) int {
 	}
 	log.Printf("Starting monitor (interval=%d min)", interval)
 	llm := initLLM(cfg.LLMProvider, cfg.LLMEndpoint, cfg.LLMKey, cfg.LLMModel)
+	ledger := internal.LoadUsage(internal.DefaultUsagePath())
 
 	var entFilter *internal.CorporateTargetFilter
 	if cfg.EnterpriseOnly {
@@ -231,6 +241,12 @@ func RunMonitor(cfg ScanConfig) int {
 		gh.Close()
 		report.Finish()
 		logLLMCache(llm)
+		if llm != nil {
+			ledger.Observe(llm.Stats())
+			if err := ledger.Save(); err != nil {
+				log.Printf("usage ledger save failed: %v", err)
+			}
+		}
 
 		if report.VerifiedCount > 0 {
 			log.Printf("Cycle #%d: %d verified secrets found!", runCount, report.VerifiedCount)

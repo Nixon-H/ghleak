@@ -184,6 +184,31 @@ cached — the number is measured and logged, not assumed. Keep the system
 prompt and model stable across runs for the best ratio; set
 `GHLEAK_LLM_SESSION` to share a cache-affinity session across processes.
 
+### Tracking usage
+
+Every scan/monitor run folds provider-reported usage into a persistent ledger
+(`~/.cache/ghleak/usage.json`, or `$XDG_CACHE_HOME/ghleak/usage.json`):
+
+```bash
+ghleak usage              # cumulative table
+ghleak usage --json       # machine-readable
+ghleak providers          # endpoint/model/auth/cache matrix
+```
+
+```
+GHLEAK LLM USAGE  /home/you/.cache/ghleak/usage.json
+
+PROVIDER/MODEL                  REQ     ERR        INPUT       CACHED    HIT%     OUTPUT  LAST USED
+openai/gpt-4o-mini               42       1        84120        82736    98.4%      12030  2026-11-06 10:24
+opencode-go/deepseek-v4.1-flash  118      0       402310       399012    99.2%      55210  2026-11-06 10:31
+TOTAL                           160       1       486430       481748    99.0%      67240
+```
+
+Per-run, each scan also logs its own rate and the ledger path. `--file PATH`
+or `$XDG_CACHE_HOME` relocate the ledger. The counters come straight from the
+providers' usage objects, so the percentages reflect what was actually billed
+as cached — not an estimate.
+
 ## Architecture
 
 ```

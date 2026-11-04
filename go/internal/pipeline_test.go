@@ -125,7 +125,7 @@ func TestFindingString(t *testing.T) {
 
 // Test the Version constant matches the repository release
 func TestVersion(t *testing.T) {
-	expected := "1.5.0"
+	expected := "1.6.0"
 	if Version != expected {
 		t.Errorf("Version = %s, want %s", Version, expected)
 	}

@@ -3,7 +3,7 @@ package internal
 import "regexp"
 
 // Version matches the repository release
-const Version = "1.5.0"
+const Version = "1.6.0"
 
 // ── API endpoints ──────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ const (
 	BitBucketAPIBase   = "https://api.bitbucket.org/2.0"
 	AzureDevOpsAPIBase = "https://dev.azure.com"
 	SourceForgeAPIBase = "https://sourceforge.net/rest"
-	UserAgent          = "ghleak/1.5.0 (security research; +https://github.com/Nixon-H/ghleak)"
+	UserAgent          = "ghleak/1.6.0 (security research; +https://github.com/Nixon-H/ghleak)"
 )
 
 // ── LLM / AI configuration ─────────────────────────────────────────
@@ -56,6 +56,16 @@ var LLMProviderPresets = map[string]LLMProviderPreset{
 	},
 	"openai-compatible": {Endpoint: "", Model: ""},
 	"custom":            {Endpoint: "", Model: ""},
+}
+
+// LLMProviderNotes documents auth + cache behaviour for `ghleak providers`.
+var LLMProviderNotes = map[string]string{
+	"openai":            "Bearer; automatic prefix cache + prompt_cache_key",
+	"anthropic":         "x-api-key + anthropic-version; system cache_control",
+	"gemini":            "API key query; implicit provider caching",
+	"opencode-go":       "Bearer oc_sk_; x-opencode-session cache affinity",
+	"openai-compatible": "Bearer; base URL normalized to /chat/completions",
+	"custom":            "alias of openai-compatible",
 }
 
 // One-shot and batch prompts are split into a stable system part and a

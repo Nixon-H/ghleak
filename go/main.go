@@ -195,6 +195,16 @@ func main() {
 		}
 		fmt.Printf("Corporate targets cache updated at %s\n", cachePath)
 
+	case "usage":
+		usageFS := flag.NewFlagSet("usage", flag.ExitOnError)
+		usageFile := usageFS.String("file", "", "usage ledger path (default ~/.cache/ghleak/usage.json)")
+		asJSON := usageFS.Bool("json", false, "emit JSON instead of a table")
+		usageFS.Parse(subArgs)
+		os.Exit(cmd.RunUsage(*usageFile, *asJSON))
+
+	case "providers":
+		os.Exit(cmd.RunProviders())
+
 	case "url":
 		if len(subArgs) < 2 {
 			fmt.Fprintf(os.Stderr, "Usage: ghleak url <git-url> <sha>\n")
@@ -236,6 +246,8 @@ Usage:
   ghleak commit <owner/repo> <sha>
   ghleak url <git-url> <sha>
   ghleak update-corporate
+  ghleak usage [--json] [--file PATH]
+  ghleak providers
 
 Global flags:
 `)
@@ -247,6 +259,8 @@ Commands:
   commit            Scan a specific commit from a forge
   url               Scan from any git forge URL
   update-corporate  Fetch Fortune 500 domains and cache locally
+  usage             Show cumulative LLM usage + cache hit rate
+  providers         List LLM providers, endpoints, models, cache behaviour
 
 Examples:
   ghleak scan

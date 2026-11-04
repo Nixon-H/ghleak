@@ -26,22 +26,58 @@ type LLMBackend interface {
 	Classify(message string) (Classification, error)
 	ClassifyBatch(messages []string) (map[int]Classification, error)
 	CacheStats() (input, cached int64)
+	Stats() BackendStats
 }
 
-// cacheCounters accumulates provider-reported usage across calls.
-type cacheCounters struct {
-	mu     sync.Mutex
-	input  int64
-	cached int64
+// BackendStats is a point-in-time snapshot of one backend's usage.
+type BackendStats struct {
+	Provider     string
+	Model        string
+	Requests     int64
+	Errors       int64
+	InputTokens  int64
+	CachedTokens int64
+	OutputTokens int64
 }
 
-func (c *cacheCounters) add(input, cached int) {
-	if input <= 0 && cached <= 0 {
-		return
+// HitRate is cached input tokens as a percentage of total input tokens.
+func (s BackendStats) HitRate() float64 {
+	if s.InputTokens == 0 {
+		return 0
 	}
+	return float64(s.CachedTokens) / float64(s.InputTokens) * 100
+}
+
+// cacheCounters accumulates provider-reported usage across calls. It is the
+// single source for both the end-of-run cache line and the persistent ledger.
+type cacheCounters struct {
+	mu       sync.Mutex
+	provider string
+	model    string
+	requests int64
+	errors   int64
+	input    int64
+	cached   int64
+	output   int64
+}
+
+func newCacheCounters(provider, model string) cacheCounters {
+	return cacheCounters{provider: provider, model: model}
+}
+
+func (c *cacheCounters) ok(input, cached, output int) {
 	c.mu.Lock()
+	c.requests++
 	c.input += int64(input)
 	c.cached += int64(cached)
+	c.output += int64(output)
+	c.mu.Unlock()
+}
+
+func (c *cacheCounters) fail() {
+	c.mu.Lock()
+	c.requests++
+	c.errors++
 	c.mu.Unlock()
 }
 
@@ -49,6 +85,20 @@ func (c *cacheCounters) get() (int64, int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.input, c.cached
+}
+
+func (c *cacheCounters) snapshot() BackendStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return BackendStats{
+		Provider:     c.provider,
+		Model:        c.model,
+		Requests:     c.requests,
+		Errors:       c.errors,
+		InputTokens:  c.input,
+		CachedTokens: c.cached,
+		OutputTokens: c.output,
+	}
 }
 
 // newSessionID is the cache-affinity identifier. Stable for the process
@@ -162,6 +212,7 @@ type openAIChoice struct {
 
 type openAIUsage struct {
 	PromptTokens       int `json:"prompt_tokens"`
+	CompletionTokens   int `json:"completion_tokens"`
 	PromptTokensDetail struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
@@ -204,10 +255,13 @@ func NewOpenAICompatibleBackend(provider, endpoint, apiKey, model, session strin
 		Model:     model,
 		SessionID: session,
 		Client:    &http.Client{Timeout: 60 * time.Second},
+		stats:     newCacheCounters(provider, model),
 	}
 }
 
 func (b *OpenAIBackend) CacheStats() (int64, int64) { return b.stats.get() }
+
+func (b *OpenAIBackend) Stats() BackendStats { return b.stats.snapshot() }
 
 func (b *OpenAIBackend) doRequest(system, user string, maxTokens int) (string, error) {
 	req := openAIRequest{
@@ -261,7 +315,9 @@ func (b *OpenAIBackend) doRequest(system, user string, maxTokens int) (string, e
 		if len(openAIResp.Choices) == 0 {
 			return "", fmt.Errorf("llm no choices")
 		}
-		b.stats.add(openAIResp.Usage.PromptTokens, openAIResp.Usage.PromptTokensDetail.CachedTokens)
+		b.stats.ok(openAIResp.Usage.PromptTokens,
+			openAIResp.Usage.PromptTokensDetail.CachedTokens,
+			openAIResp.Usage.CompletionTokens)
 		return strings.TrimSpace(openAIResp.Choices[0].Message.Content), nil
 	}
 	if lastErr == nil {
@@ -297,6 +353,7 @@ func (b *OpenAIBackend) classifyOne(msg string) (Classification, error) {
 	user := strings.Replace(OneShotUserPrompt, "{commit_message}", msg, 1)
 	text, err := b.doRequest(OneShotSystemPrompt, user, 64)
 	if err != nil {
+		b.stats.fail()
 		return Clean, err
 	}
 	if strings.HasPrefix(strings.ToLower(text), "true") {
@@ -317,6 +374,7 @@ func (b *OpenAIBackend) ClassifyBatch(msgs []string) (map[int]Classification, er
 	user := strings.Replace(BatchUserPrompt, "{messages}", strings.Join(parts, "\n---\n"), 1)
 	text, err := b.doRequest(BatchSystemPrompt, user, 1024)
 	if err != nil {
+		b.stats.fail()
 		return nil, err
 	}
 	return parseBatchResponse(text)
@@ -342,10 +400,13 @@ func NewGeminiBackend(apiKey, model string) *GeminiBackend {
 		Model:     model,
 		SessionID: newSessionID(),
 		Client:    &http.Client{Timeout: 30 * time.Second},
+		stats:     newCacheCounters("gemini", model),
 	}
 }
 
 func (b *GeminiBackend) CacheStats() (int64, int64) { return b.stats.get() }
+
+func (b *GeminiBackend) Stats() BackendStats { return b.stats.snapshot() }
 
 func (b *GeminiBackend) endpoint() string {
 	if b.Endpoint != "" {
@@ -375,6 +436,7 @@ type geminiCandidate struct {
 type geminiUsage struct {
 	PromptTokenCount        int `json:"promptTokenCount"`
 	CachedContentTokenCount int `json:"cachedContentTokenCount"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount"`
 }
 
 type geminiResponse struct {
@@ -403,7 +465,9 @@ func (b *GeminiBackend) call(system, user string) (string, error) {
 	if err := json.Unmarshal(respData, &geminiResp); err != nil {
 		return "", fmt.Errorf("gemini decode: %w", err)
 	}
-	b.stats.add(geminiResp.UsageMetadata.PromptTokenCount, geminiResp.UsageMetadata.CachedContentTokenCount)
+	b.stats.ok(geminiResp.UsageMetadata.PromptTokenCount,
+		geminiResp.UsageMetadata.CachedContentTokenCount,
+		geminiResp.UsageMetadata.CandidatesTokenCount)
 	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
 		return "", nil
 	}
@@ -414,6 +478,7 @@ func (b *GeminiBackend) classifyOne(msg string) (Classification, error) {
 	user := strings.Replace(OneShotUserPrompt, "{commit_message}", msg, 1)
 	text, err := b.call(OneShotSystemPrompt, user)
 	if err != nil {
+		b.stats.fail()
 		return Clean, err
 	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(text)), "true") {
@@ -434,6 +499,7 @@ func (b *GeminiBackend) ClassifyBatch(msgs []string) (map[int]Classification, er
 	user := strings.Replace(BatchUserPrompt, "{messages}", strings.Join(parts, "\n---\n"), 1)
 	text, err := b.call(BatchSystemPrompt, user)
 	if err != nil {
+		b.stats.fail()
 		return nil, err
 	}
 	return parseBatchResponse(text)
@@ -459,10 +525,13 @@ func NewAnthropicBackend(apiKey, model string) *AnthropicBackend {
 		Model:     model,
 		SessionID: newSessionID(),
 		Client:    &http.Client{Timeout: 60 * time.Second},
+		stats:     newCacheCounters("anthropic", model),
 	}
 }
 
 func (b *AnthropicBackend) CacheStats() (int64, int64) { return b.stats.get() }
+
+func (b *AnthropicBackend) Stats() BackendStats { return b.stats.snapshot() }
 
 func (b *AnthropicBackend) endpoint() string {
 	if b.Endpoint != "" {
@@ -507,6 +576,7 @@ type anthropicContent struct {
 
 type anthropicUsage struct {
 	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
@@ -547,7 +617,8 @@ func (b *AnthropicBackend) call(system, user string, maxTokens int) (string, err
 	}
 	u := anthropicResp.Usage
 	// input_tokens excludes cache reads/writes; total prompt = sum of three.
-	b.stats.add(u.InputTokens+u.CacheReadInputTokens+u.CacheCreationInputTokens, u.CacheReadInputTokens)
+	b.stats.ok(u.InputTokens+u.CacheReadInputTokens+u.CacheCreationInputTokens,
+		u.CacheReadInputTokens, u.OutputTokens)
 	if len(anthropicResp.Content) == 0 {
 		return "", nil
 	}
@@ -558,6 +629,7 @@ func (b *AnthropicBackend) classifyOne(msg string) (Classification, error) {
 	user := strings.Replace(OneShotUserPrompt, "{commit_message}", msg, 1)
 	text, err := b.call(OneShotSystemPrompt, user, 64)
 	if err != nil {
+		b.stats.fail()
 		return Clean, err
 	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(text)), "true") {
@@ -578,6 +650,7 @@ func (b *AnthropicBackend) ClassifyBatch(msgs []string) (map[int]Classification,
 	user := strings.Replace(BatchUserPrompt, "{messages}", strings.Join(parts, "\n---\n"), 1)
 	text, err := b.call(BatchSystemPrompt, user, 1024)
 	if err != nil {
+		b.stats.fail()
 		return nil, err
 	}
 	return parseBatchResponse(text)

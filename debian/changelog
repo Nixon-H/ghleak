@@ -1,3 +1,24 @@
+ghleak (1.6.0-0kali1) kali-dev; urgency=medium
+
+  * Persistent LLM usage tracking: every scan/monitor run folds
+    provider-reported requests, errors, input/cached/output tokens into
+    ~/.cache/ghleak/usage.json (XDG_CACHE_HOME aware, --file override).
+  * New `ghleak usage [--json] [--file PATH]` command: cumulative table with
+    per-provider/model cache hit percentage and last-used timestamp.
+  * New `ghleak providers` command: endpoint/model/auth/cache matrix for
+    openai, anthropic, gemini, opencode-go, openai-compatible, custom.
+  * Backend counters extended: requests, errors, output tokens; per-provider
+    usage fields parsed (completion_tokens, output_tokens,
+    candidatesTokenCount).
+  * Endpoint paths verified against official docs: OpenAI
+    POST /chat/completions (+ prompt_cache_key), Anthropic POST /v1/messages
+    (system cache_control), Gemini models/{model}:generateContent
+    (systemInstruction, cachedContentTokenCount).
+  * Tests: ledger round-trip, missing/corrupt file handling, totals math,
+    table formatting.
+
+ -- Nixon-H <nixon@example.com>  Sat, 07 Nov 2026 00:00:00 +0000
+
 ghleak (1.5.0-0kali1) kali-dev; urgency=medium
 
   * LLM providers: canonical endpoint presets verified live for OpenAI,
