@@ -195,6 +195,7 @@ func (r *Report) ToJSON() string {
 		}
 		transformedFindings = append(transformedFindings, map[string]any{
 			"detector":   f.DetectorName,
+			"severity":   f.Severity,
 			"verified":   f.Verified,
 			"commit":     f.Commit,
 			"file":       f.File,

@@ -3,7 +3,7 @@ package internal
 import "regexp"
 
 // Version matches Python's ghleak.__version__
-const Version = "1.2.0"
+const Version = "1.3.0"
 
 // ── API endpoints ──────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ const (
 	BitBucketAPIBase   = "https://api.bitbucket.org/2.0"
 	AzureDevOpsAPIBase = "https://dev.azure.com"
 	SourceForgeAPIBase = "https://sourceforge.net/rest"
-	UserAgent          = "ghleak/1.2.0 (security research; +https://github.com/Nixon-H/ghleak)"
+	UserAgent          = "ghleak/1.3.0 (security research; +https://github.com/Nixon-H/ghleak)"
 )
 
 // ── LLM / AI configuration ─────────────────────────────────────────

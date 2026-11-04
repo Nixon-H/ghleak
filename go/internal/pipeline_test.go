@@ -125,7 +125,7 @@ func TestFindingString(t *testing.T) {
 
 // Test the Version constant matches Python's version
 func TestVersion(t *testing.T) {
-	expected := "1.1.0"
+	expected := "1.3.0"
 	if Version != expected {
 		t.Errorf("Version = %s, want %s", Version, expected)
 	}

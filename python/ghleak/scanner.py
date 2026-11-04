@@ -34,6 +34,7 @@ class TruffleHogResult:
         self.decoder = raw.get("DecoderName", "")
         self.verified = raw.get("Verified", False)
         self.redacted = raw.get("Redacted", False)
+        self.severity = raw.get("Severity", "")
         self.raw_v2 = data.get("RawV2", "")
 
         meta = self.source_metadata.get("Data", {}).get("Git", {})
@@ -91,6 +92,7 @@ class TruffleHogScanner:
             "DecoderName": "PLAIN",
             "Verified": False,
             "Redacted": True,
+            "Severity": pf.severity,
             "Data": {"RawV2": pf.redacted},
             "SourceMetadata": {
                 "Data": {

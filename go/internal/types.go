@@ -45,6 +45,7 @@ type Finding struct {
 	Decoder      string `json:"decoder"`
 	Verified     bool   `json:"verified"`
 	Redacted     bool   `json:"redacted"`
+	Severity     string `json:"severity,omitempty"`
 	RawV2        string `json:"raw_v2"`
 	Commit       string `json:"commit"`
 	File         string `json:"file"`

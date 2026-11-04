@@ -115,6 +115,7 @@ class Report:
             "verified_findings": [
                 {
                     "detector": f.detector,
+                    "severity": getattr(f, "severity", ""),
                     "verified": f.verified,
                     "commit": f.commit,
                     "file": f.file,

@@ -33,19 +33,26 @@ Suspicious commits get their diff fetched via GitHub API, then scanned with `tru
 
 Every diff is *also* scanned by a zero-dependency pattern engine that matches credential **values** directly. This works even when the `trufflehog` binary is not installed, and its candidates are merged with TruffleHog's findings (TruffleHog stays authoritative; builtin hits are `verified=false`).
 
+**57 detectors**, each with a severity level (Critical/High/Medium/Low):
+
 | Family | Patterns |
 |---|---|
-| GitHub | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_` |
+| Private keys | `BEGIN RSA/DSA/EC/OPENSSH/PGP PRIVATE KEY` blocks |
+| GitHub | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, credentials in clone URLs |
 | GitLab | `glpat-` |
-| AWS | `AKIA`/`ASIA`/`ABIA`/`ACCA` key IDs, 40-char secret keys (context-gated) |
-| Google | `AIza…` API keys |
+| AWS | `AKIA`/`ASIA`/`ABIA`/`ACCA` key IDs, 40-char secret keys, MWS auth tokens |
+| Google | `AIza…` API keys, `ya29.…` OAuth refresh tokens, service-account JSON |
 | LLM providers | `sk-ant-…` (Anthropic), `sk-…T3BlbkFJ…` / `sk-proj-…` (OpenAI) |
-| Messaging | `xox[abprs]-` (Slack), Telegram bot tokens |
-| Payments | `[rs]k_live_…` (Stripe), `shpat_…` (Shopify), `EAAA…` (Square) |
-| Email/ops | `SG.…` (SendGrid), `SK…` (Twilio), `heroku_…`, `npm_…`, `pypi-…` |
-| Tokens | JWTs (`eyJ….eyJ….`), Firebase Cloud Messaging keys |
+| Messaging | `xox[abprs]-` (Slack), Slack webhooks, Discord bot tokens, Telegram bots |
+| Payments | `[rs]k_live_…` (Stripe), `whsec_…` webhooks, `shpat_…` (Shopify), `sq0atp`/`sq0csp`/`EAAA…` (Square), PayPal Braintree tokens |
+| Email | `SG.…` (SendGrid), `key-…` (Mailgun), `…-usNN` (MailChimp) |
+| Cloud/ops | `AKIA`-adjacent Twilio keys + SIDs, Heroku UUIDs, Azure client secrets, Jenkins tokens, Grafana `glsa_`, New Relic `NRAK-`, Doppler `dp.pt.`, Netlify `nfp_`, npm, PyPI |
+| Social | Facebook access tokens + app secrets, Twitter access + OAuth secrets |
+| Credentialed URLs | `mongodb(+srv)://user:pass@`, `postgres://`, `mysql://`, `redis://`, `amqp(s)://`, Cloudinary URLs, password-in-URL |
+| Generic assignments | `password=`, `api_key=`, `secret=` (context-anchored, length-bounded) |
+| Auth headers | `Bearer …`, `Basic …`, JWTs (`eyJ….eyJ….`), Firebase FCM keys |
 
-Placeholder guards reject `ghp_YOUR_TOKEN_HERE`-style examples, and each hit is redacted (`ghp_AbcDef…`) before it reaches logs or reports.
+Placeholder guards reject `ghp_YOUR_TOKEN_HERE` / `password = "your_password"`-style examples, and each hit is redacted (`ghp_AbcDef…`) before it reaches logs or reports.
 
 ### Rate limits
 

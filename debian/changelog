@@ -1,3 +1,26 @@
+ghleak (1.3.0-0kali1) kali-dev; urgency=medium
+
+  * Built-in pattern catalog expanded to 57 detectors, merging SecretFinder
+    (m4ll0k) and the viralvaghela APK scanner catalogs with modern prefixes:
+    private key blocks, GitHub/GitLab/npm/PyPI, Google (AIza, ya29, service
+    account JSON), OpenAI/Anthropic, AWS (key id, secret, MWS), Slack
+    (tokens + webhooks), Discord, Telegram, Stripe (+webhook secrets),
+    Shopify, Square, PayPal Braintree, SendGrid, Mailgun, MailChimp, Twilio
+    (key + SIDs), Facebook, Twitter, Heroku, Azure, Jenkins, Grafana,
+    New Relic, Doppler, Netlify, JWT, Bearer/Basic headers, credentialed
+    DB/Cloudinary URLs, password-in-URL, generic password/api_key/secret
+    assignments.
+  * Each detector now carries a severity (Critical/High/Medium/Low), included
+    in JSON reports and the builtin/<detector> finding name.
+  * Placeholder guards extended (YOUR_/EXAMPLE/XXXX/...) for all families.
+  * Dedupe is per (detector, value, line) so overlapping detectors both report.
+  * Diff-header filter fixed: PEM '-----BEGIN' lines were being skipped as
+    '---' diff headers.
+  * Python unittest suite added (python/tests/test_patterns.py, 8 tests) and
+    Go patterns_test.go expanded to 16 positives + 7 negatives.
+
+ -- Nixon-H <nixon@example.com>  Wed, 04 Nov 2026 18:00:00 +0000
+
 ghleak (1.2.0-0kali1) kali-dev; urgency=medium
 
   * Built-in secret pattern scanner (ghp_, gho_, github_pat_, AKIA, AIza,

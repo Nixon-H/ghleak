@@ -8,4 +8,4 @@ xoxb-, …) works with or without TruffleHog.
 
 from . import config, fetcher, classifier, patterns, scanner, reporter
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
