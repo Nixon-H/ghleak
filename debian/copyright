@@ -4,7 +4,6 @@ Upstream-Name: ghleak
 
 Files:
  go/*
- python/*
 Copyright: 2026 Nixon-H <nixon@example.com>
 License: MIT
 

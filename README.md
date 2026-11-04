@@ -70,16 +70,9 @@ Rotate at the issuer first (not in the file), then clean git history with `git-f
 
 ## Installation
 
-Two implementations available — Python and Go. Either is sufficient.
-
-### Python (PyPI)
-
-```bash
-pip install ghleak
-# Requires: trufflehog binary in PATH
-```
-
-Or from source: `pip install -e ./python`
+Single Go implementation — no runtime dependencies beyond the optional
+`trufflehog` binary. (Go-only since v1.4.0; the former Python implementation
+was removed and remains available in git history.)
 
 ### Go (from source)
 
@@ -95,9 +88,8 @@ cd ghleak/go
 go build -o ghleak .
 ```
 
-**Requires:** `trufflehog` binary in `PATH` for both versions — optional since
-v1.2.0: without it, the built-in pattern scanner still reports candidates
-(marked unverified).
+**Requires:** `trufflehog` binary in `PATH` — optional: without it, the
+built-in pattern scanner still reports candidates (marked unverified).
 
 Needs a GitHub token (set `GITHUB_TOKEN` env var) for commit message and diff fetching. Without one, rate limits are 60 req/hr — effectively unusable for archive scanning.
 
@@ -164,13 +156,17 @@ add new feature                   → clean       ✓
 
 ```
 ghleak/
-├── __init__.py          # Package entry
-├── config.py            # Regex patterns, detector keywords, prompts
-├── classifier.py        # CommitClassifier (regex-first, AI-fallback)
-├── fetcher.py           # GH Archive download, GitHub/GitLab API, URL parsing
-├── scanner.py           # TruffleHog wrapper (git, filesystem, diff modes)
-├── reporter.py          # Report aggregation + text/JSON/CSV/MD output
-└── main.py              # CLI entry point
+├── main.go              # CLI entry point (scan/monitor/commit/url)
+├── cmd/
+│   └── scan.go          # scan + monitor pipelines
+└── internal/
+    ├── config.go        # endpoints, prompts, word lists, detector keywords
+    ├── classifier.go    # CommitClassifier (regex-first, AI-fallback)
+    ├── fetcher.go       # GH Archive download, GitHub/GitLab API, rate limits
+    ├── patterns.go      # built-in 57-detector secret-value scanner
+    ├── scanner.go       # TruffleHog engine + subprocess wrapper
+    ├── reporter.go      # text/JSON/CSV/MD reports
+    └── corporate.go     # Fortune 500 / big-tech target filter
 ```
 
 ## References
