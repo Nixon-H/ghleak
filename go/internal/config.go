@@ -3,7 +3,7 @@ package internal
 import "regexp"
 
 // Version matches the repository release
-const Version = "1.4.1"
+const Version = "1.5.0"
 
 // ── API endpoints ──────────────────────────────────────────────────
 
@@ -16,27 +16,80 @@ const (
 	BitBucketAPIBase   = "https://api.bitbucket.org/2.0"
 	AzureDevOpsAPIBase = "https://dev.azure.com"
 	SourceForgeAPIBase = "https://sourceforge.net/rest"
-	UserAgent          = "ghleak/1.4.1 (security research; +https://github.com/Nixon-H/ghleak)"
+	UserAgent          = "ghleak/1.5.0 (security research; +https://github.com/Nixon-H/ghleak)"
 )
 
 // ── LLM / AI configuration ─────────────────────────────────────────
 
 const (
 	DefaultLLMProvider = "openai"
-	DefaultLLMEndpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-	DefaultLLMModel    = "gemini-2.5-flash-lite"
+	DefaultLLMModel    = "gpt-4o-mini"
 )
 
-const OneShotPrompt = `Analyze the following Git commit message to determine if it is fixing a secret leak.
-The message might mention revoking, removing, or rotating keys, tokens, passwords, or other credentials.
-Respond with only "true" if it is highly likely to be fixing a secret leak, otherwise respond with "false".
+// LLMProviderPreset pins the canonical endpoint + default model per provider.
+// All five endpoints below were probed and answer 400/401/403 (they exist).
+// Anthropic keeps its native Messages API; everything else speaks the
+// OpenAI chat-completions shape (Gemini via its compatibility endpoint does
+// too — set endpoint explicitly if you prefer that over the native API).
+type LLMProviderPreset struct {
+	Endpoint string
+	Model    string
+}
 
-Commit Message:
+var LLMProviderPresets = map[string]LLMProviderPreset{
+	"openai": {
+		Endpoint: "https://api.openai.com/v1/chat/completions",
+		Model:    "gpt-4o-mini",
+	},
+	"anthropic": {
+		Endpoint: "https://api.anthropic.com/v1/messages",
+		Model:    "claude-3-5-haiku-latest",
+	},
+	"gemini": {
+		// Native generateContent; URL built from model+key at call time.
+		Endpoint: "",
+		Model:    "gemini-2.5-flash-lite",
+	},
+	"opencode-go": {
+		Endpoint: "https://opencode.ai/inference/go/openai/v1/chat/completions",
+		Model:    "deepseek-v4.1-flash",
+	},
+	"openai-compatible": {Endpoint: "", Model: ""},
+	"custom":            {Endpoint: "", Model: ""},
+}
+
+// One-shot and batch prompts are split into a stable system part and a
+// variable user part: the system text never changes between calls, so
+// provider prompt caches (and the OpenCode Go session cache) can reuse it.
+const OneShotSystemPrompt = `Analyze the following Git commit message to determine if it is fixing a secret leak.
+The message might mention revoking, removing, or rotating keys, tokens, passwords, or other credentials.
+Respond with only "true" if it is highly likely to be fixing a secret leak, otherwise respond with "false".`
+
+const OneShotUserPrompt = `Commit Message:
 ---
 {commit_message}
 ---`
 
-const BatchPrompt = "Analyze the following Git commit messages to determine if any of them are fixing a secret leak.\nA message is considered to be fixing a secret leak if it mentions revoking, removing, or rotating keys, tokens, passwords, or credentials.\nReturn a JSON object where each key is the numeric index of the commit message (as a string) and the value is a boolean (`true` or `false`).\nEnsure your response is only the JSON object.\n\nCommit Messages:\n---\n{messages}\n---"
+const BatchSystemPrompt = `Analyze the following Git commit messages to determine if any of them are fixing a secret leak.
+A message is considered to be fixing a secret leak if it mentions revoking, removing, or rotating keys, tokens, passwords, or credentials.
+Return a JSON object where each key is the numeric index of the commit message (as a string) and the value is a boolean (true or false).
+Ensure your response is only the JSON object.`
+
+const BatchUserPrompt = `Commit Messages:
+---
+{messages}
+---`
+
+// Backwards-compatible combined prompts (used by prompt-shaping tests).
+const OneShotPrompt = OneShotSystemPrompt + "\n\n" + `Commit Message:
+---
+{commit_message}
+---`
+
+const BatchPrompt = BatchSystemPrompt + "\n\n" + `Commit Messages:
+---
+{messages}
+---`
 
 // ── Forge types ────────────────────────────────────────────────────
 
@@ -57,7 +110,9 @@ var ForgeAPIDefaults = map[string]string{
 
 // ── LLM providers ──────────────────────────────────────────────────
 
-var LLMProviders = []string{"openai", "gemini", "anthropic", "custom"}
+var LLMProviders = []string{
+	"openai", "anthropic", "gemini", "opencode-go", "openai-compatible", "custom",
+}
 
 // ── Compiled regex patterns ────────────────────────────────────────
 

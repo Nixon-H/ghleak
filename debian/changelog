@@ -1,3 +1,26 @@
+ghleak (1.5.0-0kali1) kali-dev; urgency=medium
+
+  * LLM providers: canonical endpoint presets verified live for OpenAI,
+    Anthropic, Gemini, OpenCode Go and OpenAI-compatible/custom base URLs;
+    provider auto-detection now recognises oc_sk_ keys.
+  * OpenCode Go support: default endpoint
+    https://opencode.ai/inference/go/openai/v1/chat/completions, model
+    deepseek-v4.1-flash, Bearer auth, and x-opencode-session cache-affinity
+    header (stable per process, overridable via GHLEAK_LLM_SESSION).
+  * Caching mechanics: prompts split into stable system + variable user parts;
+    Anthropic system block now carries cache_control: ephemeral (required for
+    any caching); OpenAI sends a stable prompt_cache_key; Gemini native
+    generateContent with systemInstruction.
+  * Cache-hit accounting: usage.cached fields parsed per provider
+    (prompt_tokens_details.cached_tokens, cache_read_input_tokens,
+    cachedContentTokenCount); scans/monitor cycles log the measured rate.
+  * OpenAI-compatible base URLs are normalized (/v1 -> /v1/chat/completions);
+    custom providers without an endpoint are rejected with a clear log.
+  * Tests: endpoint normalization, presets, OpenAI cache key + system message,
+    OpenCode Go header/no-cache-key, Anthropic cache_control + usage parsing.
+
+ -- Nixon-H <nixon@example.com>  Fri, 06 Nov 2026 00:00:00 +0000
+
 ghleak (1.4.1-0kali1) kali-dev; urgency=medium
 
   * LLM backends: retry/backoff now covers all providers, not just the

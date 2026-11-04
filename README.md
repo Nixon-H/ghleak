@@ -152,6 +152,38 @@ fix keyboard shortcut             → clean       ✓
 add new feature                   → clean       ✓
 ```
 
+## LLM fallback providers
+
+All five endpoints below were probed (they answer 400/401/403 — live paths,
+not 404s) and are selectable with `--llm-provider`:
+
+| Provider | Endpoint | Default model | Auth | Cache mechanism |
+|---|---|---|---|---|
+| `openai` | `https://api.openai.com/v1/chat/completions` | `gpt-4o-mini` | Bearer | Automatic prefix cache + stable `prompt_cache_key` (`ghleak-<model>`) |
+| `anthropic` | `https://api.anthropic.com/v1/messages` | `claude-3-5-haiku-latest` | `x-api-key` + `anthropic-version` | System block marked `cache_control: ephemeral` (Anthropic does not cache without a breakpoint) |
+| `gemini` | native `…/models/{model}:generateContent` | `gemini-2.5-flash-lite` | key query param | Provider-managed implicit caching |
+| `opencode-go` | `https://opencode.ai/inference/go/openai/v1/chat/completions` | `deepseek-v4.1-flash` | Bearer `oc_sk_…` | `x-opencode-session` header pins the conversation to a warm cache shard |
+| `openai-compatible` / `custom` | your base URL — `/v1` is normalized to `/v1/chat/completions` | yours | Bearer | Provider-dependent |
+
+Every backend splits the prompt into a **stable system part** and a variable
+user part, so provider prefix caches can reuse the instruction across calls.
+Batch classification sends one request per batch, not per message.
+
+**Cache-hit accounting is real:** usage fields are parsed per provider
+(`prompt_tokens_details.cached_tokens`, `cache_read_input_tokens`,
+`cachedContentTokenCount`) and the scan ends with:
+
+```
+LLM prompt cache: 97.4% of 18244 input tokens cached (17768 tokens)
+```
+
+Honest caveat: 99.xx% hit rates come from workloads with a large, stable
+context (agent transcripts, repeated long prompts). A short classifier prompt
+whose variable part dominates will report whatever the provider actually
+cached — the number is measured and logged, not assumed. Keep the system
+prompt and model stable across runs for the best ratio; set
+`GHLEAK_LLM_SESSION` to share a cache-affinity session across processes.
+
 ## Architecture
 
 ```

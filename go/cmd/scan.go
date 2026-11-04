@@ -142,6 +142,7 @@ func RunScan(cfg ScanConfig) int {
 	gh.Close()
 	report.Finish()
 
+	logLLMCache(llm)
 	log.Printf("Summary: %d hours, %d events, %d resolved, %d suspicious, %d verified",
 		report.HoursScanned, totalPushes, report.CommitsSeen,
 		len(report.SuspiciousCommits), report.VerifiedCount)
@@ -229,6 +230,7 @@ func RunMonitor(cfg ScanConfig) int {
 		report.ClassifierStats = classifier.Stats()
 		gh.Close()
 		report.Finish()
+		logLLMCache(llm)
 
 		if report.VerifiedCount > 0 {
 			log.Printf("Cycle #%d: %d verified secrets found!", runCount, report.VerifiedCount)
@@ -245,6 +247,20 @@ func initLLM(provider, endpoint, apiKey, model string) internal.LLMBackend {
 		return nil
 	}
 	return internal.BuildLLMBackend(provider, endpoint, apiKey, model)
+}
+
+// logLLMCache reports the provider-observed prompt-cache hit rate.
+func logLLMCache(llm internal.LLMBackend) {
+	if llm == nil {
+		return
+	}
+	input, cached := llm.CacheStats()
+	if input <= 0 {
+		log.Printf("LLM prompt cache: no usage reported by provider")
+		return
+	}
+	log.Printf("LLM prompt cache: %.1f%% of %d input tokens cached (%.0f tokens)",
+		100*float64(cached)/float64(input), input, float64(cached))
 }
 
 func shortSHA(sha string) string {
