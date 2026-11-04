@@ -20,6 +20,8 @@ import gzip
 import io
 import json
 import logging
+import os
+import random
 import subprocess
 import tempfile
 import time
@@ -120,25 +122,96 @@ class GitAPIClient:
 
     # ── Rate-limit handling ───────────────────────────────────────
 
-    def _check_rate_limit(self) -> None:
-        if self.rate_remaining > 0:
-            return
-        now = time.time()
-        if now < self.rate_reset:
-            log.warning("Rate limit exhausted, sleeping %.0fs", self.rate_reset - now + 1)
-            time.sleep(self.rate_reset - now + 1)
+    # Never hammer right up against the wall: when remaining drops below
+    # this, requests are paced so the window outlasts the reset time.
+    PACE_THRESHOLD = 200
+    MAX_ATTEMPTS = 5
+    BASE_BACKOFF = 1.0          # seconds; doubles each attempt
+    BACKOFF_CAP = 120.0
 
-    def _update_rate_limit(self) -> None:
+    def _apply_rate_headers(self, resp: httpx.Response) -> None:
+        """Track x-ratelimit-* response headers (GitHub) — the honest way."""
         if self.forge_type != "github":
             return
-        try:
-            resp = self._client.get(f"{self.api_base}/rate_limit")
-            if resp.status_code == 200:
-                core = resp.json().get("resources", {}).get("core", {})
-                self.rate_remaining = core.get("remaining", 0)
-                self.rate_reset = core.get("reset", 0)
-        except Exception:
-            pass
+        remaining = resp.headers.get("x-ratelimit-remaining")
+        reset = resp.headers.get("x-ratelimit-reset")
+        if remaining is not None:
+            try:
+                self.rate_remaining = int(remaining)
+            except ValueError:
+                pass
+        if reset is not None:
+            try:
+                self.rate_reset = float(reset)
+            except ValueError:
+                pass
+
+    def _pace_if_needed(self) -> None:
+        """Spread requests out when the remaining budget runs low."""
+        if self.forge_type != "github" or self.rate_remaining >= self.PACE_THRESHOLD:
+            return
+        now = time.time()
+        if self.rate_reset <= now:
+            return
+        window = self.rate_reset - now
+        pace = window / max(self.rate_remaining, 1)
+        if pace > 0.05:
+            time.sleep(min(pace, 30.0))
+
+    def _check_rate_limit(self) -> None:
+        now = time.time()
+        if self.rate_remaining <= 0 and now < self.rate_reset:
+            wait = self.rate_reset - now + 1
+            log.warning("Rate limit exhausted, sleeping %.0fs", wait)
+            time.sleep(wait)
+        self._pace_if_needed()
+
+    def _retry_sleep(self, attempt: int, resp: httpx.Response | None) -> None:
+        """Exponential backoff with jitter; prefer the server's Retry-After."""
+        delay = min(self.BASE_BACKOFF * (2 ** attempt), self.BACKOFF_CAP)
+        delay *= 0.5 + random.random()  # jitter: 50%-150%
+        if resp is not None:
+            ra = resp.headers.get("retry-after")
+            if ra:
+                try:
+                    delay = max(delay, float(ra))
+                except ValueError:
+                    pass
+        log.warning("Backing off %.1fs (attempt %d)", delay, attempt + 1)
+        time.sleep(delay)
+
+    def _get(self, url: str, headers: dict[str, str] | None = None) -> httpx.Response:
+        """GET with rate-limit pacing, retries, and backoff.
+
+        Retries: 403/429 (rate limits), 5xx, and transport errors.
+        Non-retryable statuses (404, 401, 422 …) return immediately.
+        """
+        last_resp: httpx.Response | None = None
+        last_exc: Exception | None = None
+        for attempt in range(self.MAX_ATTEMPTS):
+            self._check_rate_limit()
+            try:
+                resp = self._client.get(url, headers=headers or {})
+                self.api_calls += 1
+                self._apply_rate_headers(resp)
+                self.rate_remaining = max(0, self.rate_remaining - 1)
+
+                if resp.status_code == 200:
+                    return resp
+                if resp.status_code in (403, 429) or resp.status_code >= 500:
+                    last_resp = resp
+                    self._retry_sleep(attempt, resp)
+                    continue
+                return resp  # 401/404/422 … — do not retry
+            except httpx.HTTPStatusError:
+                raise
+            except Exception as exc:
+                last_exc = exc
+                self._retry_sleep(attempt, None)
+
+        if last_exc is not None:
+            raise last_exc
+        return last_resp  # type: ignore[return-value]
 
     # ── Fetch commit message ──────────────────────────────────────
 
@@ -152,16 +225,11 @@ class GitAPIClient:
         self._check_rate_limit()
         url = self._commit_url(owner, repo, sha)
         try:
-            resp = self._client.get(url)
-            self.api_calls += 1
-            self.rate_remaining = max(0, self.rate_remaining - 1)
+            resp = self._get(url)
             if resp.status_code == 200:
                 msg = self._extract_message(resp)
                 self._msg_cache[key] = msg
                 return msg
-            elif resp.status_code in (403, 429):
-                self._update_rate_limit()
-                return None
             elif resp.status_code == 404:
                 self._msg_cache[key] = None
                 return None
@@ -242,10 +310,7 @@ class GitAPIClient:
                 headers["Authorization"] = f"Bearer {self.token}"
 
         try:
-            resp = self._client.get(url, headers=headers)
-            self.api_calls += 1
-            self.rate_remaining = max(0, self.rate_remaining - 1)
-
+            resp = self._get(url, headers=headers)
             if resp.status_code == 200:
                 text = self._extract_diff(resp)
                 self._diff_cache[key] = text
@@ -376,7 +441,11 @@ def resolve_commit_messages(
     git_client: GitAPIClient | None = None,
 ) -> list[dict[str, Any]]:
     if git_client is None:
-        git_client = GitAPIClient()
+        # Inherit the token from the environment — an unauthenticated client
+        # is capped at 60 req/hr and silently loses most commits.
+        git_client = GitAPIClient(
+            token=os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+        )
     commits: list[dict[str, Any]] = []
     for pe in pushevents:
         event_type = pe.get("_event_type", "push")
@@ -635,7 +704,7 @@ def stream_hours(
         probe = now.replace(minute=0, second=0, microsecond=0)
         try:
             resp = httpx.head(archive_hour_url(probe), headers={"User-Agent": config.USER_AGENT}, timeout=15)
-            end_hour = probe if resp.status_code == 200 else (find_latest_archive_hour() or now) + timedelta(hours=1)
+            end_hour = probe if resp.status_code == 200 else (find_latest_archive_hour() or (now - timedelta(hours=1)))
         except Exception:
             end_hour = now - timedelta(hours=1)
 

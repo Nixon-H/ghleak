@@ -1,4 +1,11 @@
-"""TruffleHog wrapper — runs scans with verification enabled."""
+"""TruffleHog wrapper — runs scans with verification enabled.
+
+Also ships a built-in, zero-dependency pattern scanner (see patterns.py)
+that detects credential *values* (ghp_, AKIA, sk-ant-, xoxb-, …) directly
+in diffs. Builtin candidates are marked verified=False and are merged with
+TruffleHog results — TruffleHog stays the verification authority, but the
+pipeline now works even without a trufflehog binary.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
+from .patterns import PatternFinding, scan_text as builtin_scan_text
 
 log = logging.getLogger(__name__)
 
@@ -50,11 +58,13 @@ class TruffleHogScanner:
         only_verified: bool = True,
         fail_on_error: bool = False,
         extra_args: list[str] | None = None,
+        builtin_scan: bool = True,
     ):
         self.binary = binary
         self.only_verified = only_verified
         self.fail_on_error = fail_on_error
         self.extra_args = extra_args or []
+        self.builtin_scan = builtin_scan
 
     def scan_git_path(self, path: Path) -> list[TruffleHogResult]:
         """Scan a local git repository with TruffleHog."""
@@ -72,8 +82,54 @@ class TruffleHogScanner:
                  path, len(results), sum(1 for r in results if r.verified))
         return results
 
-    def scan_diff(self, diff_text: str) -> list[TruffleHogResult]:
-        """Scan a plain-text diff with TruffleHog."""
+    @staticmethod
+    def _pattern_finding_to_result(pf: PatternFinding) -> TruffleHogResult:
+        """Convert a builtin PatternFinding into a TruffleHogResult."""
+        raw = {
+            "DetectorName": f"builtin/{pf.detector}",
+            "DetectorType": 0,
+            "DecoderName": "PLAIN",
+            "Verified": False,
+            "Redacted": True,
+            "Data": {"RawV2": pf.redacted},
+            "SourceMetadata": {
+                "Data": {
+                    "git": {
+                        "file": pf.line_snippet or f"line {pf.line_number}",
+                        "commit": f"line:{pf.line_number}",
+                    }
+                }
+            },
+        }
+        return TruffleHogResult(raw)
+
+    def _builtin_findings(self, diff: str) -> list[TruffleHogResult]:
+        if not self.builtin_scan or not diff:
+            return []
+        try:
+            return [self._pattern_finding_to_result(pf) for pf in builtin_scan_text(diff)]
+        except Exception as exc:
+            log.warning("builtin pattern scan failed: %s", exc)
+            return []
+
+    def scan_diff(self, diff: str) -> list[TruffleHogResult]:
+        """Scan a plain-text diff: builtin pattern scan + TruffleHog."""
+        builtin = self._builtin_findings(diff)
+        try:
+            th_results = self._scan_diff_trufflehog(diff)
+        except FileNotFoundError:
+            log.warning("TruffleHog not installed — builtin pattern scan only")
+            return builtin
+        # Merge: trufflehog results are authoritative, builtin fills gaps.
+        seen = {(r.detector, r.file) for r in th_results}
+        merged = list(th_results)
+        for r in builtin:
+            if (r.detector, r.file) not in seen:
+                merged.append(r)
+        return merged
+
+    def _scan_diff_trufflehog(self, diff_text: str) -> list[TruffleHogResult]:
+        """Scan a plain-text diff with the trufflehog binary."""
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".diff", delete=False, prefix="ghleak_"
         ) as f:

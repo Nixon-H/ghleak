@@ -34,20 +34,55 @@ func NewTruffleHogScanner(onlyVerified bool) *TruffleHogScanner {
 	return &TruffleHogScanner{OnlyVerified: onlyVerified, UseEngine: true, Binary: "trufflehog"}
 }
 
-// ScanDiff runs trufflehog against a raw diff string.
+// ScanDiff runs trufflehog against a raw diff string, merged with the
+// built-in pattern scanner. TruffleHog stays authoritative (it verifies);
+// builtin candidates fill in when trufflehog is unavailable.
 func (s *TruffleHogScanner) ScanDiff(diff string) []Finding {
 	if diff == "" {
 		return nil
 	}
 
+	builtin := s.scanBuiltin(diff)
+
+	var th []Finding
 	if s.UseEngine {
 		findings, err := s.scanEngine(diff)
 		if err == nil {
-			return findings
+			th = findings
+		} else {
+			log.Printf("Engine unavailable (%v), falling back to subprocess", err)
+			th = s.scanSubprocess(diff)
 		}
-		log.Printf("Engine unavailable (%v), falling back to subprocess", err)
+	} else {
+		th = s.scanSubprocess(diff)
 	}
-	return s.scanSubprocess(diff)
+
+	seen := make(map[string]struct{}, len(th)+len(builtin))
+	merged := make([]Finding, 0, len(th)+len(builtin))
+	add := func(f Finding) {
+		key := f.DetectorName + "|" + f.File
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, f)
+	}
+	for _, f := range th {
+		add(f)
+	}
+	for _, f := range builtin {
+		add(f)
+	}
+	return merged
+}
+
+// scanBuiltin runs the zero-dependency pattern scanner over a diff.
+func (s *TruffleHogScanner) scanBuiltin(diff string) []Finding {
+	var out []Finding
+	for _, pf := range ScanTextCandidates(diff) {
+		out = append(out, patternFindingToFinding(pf))
+	}
+	return out
 }
 
 // scanGitPath scans a local git repository path with trufflehog git subcommand.

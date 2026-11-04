@@ -6,9 +6,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
 
 import httpx
+
+from .corporate_filter import cache_path
 
 log = logging.getLogger("ghleak.updater")
 
@@ -16,7 +17,8 @@ DEFAULT_SOURCE_URL = (
     "https://raw.githubusercontent.com/gigasheetco/fortune-500-domains/"
     "main/fortune-500-domains.csv"
 )
-CACHE_FILE = Path(__file__).parent / "corporate_targets.json"
+
+CACHE_FILE = None  # resolved lazily via cache_path(); kept for backwards compat
 
 FREEMAIL_BLACKLIST = frozenset({
     "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
@@ -56,13 +58,17 @@ def update_cache() -> None:
         log.warning("No domains fetched — preserving existing cache")
         return
 
+    cache_file = cache_path()
     cache_data = {
         "source": DEFAULT_SOURCE_URL,
         "count": len(domains),
         "domains": sorted(domains),
     }
-    CACHE_FILE.write_text(json.dumps(cache_data, indent=2))
-    log.info("Wrote %d domains to %s", len(domains), CACHE_FILE)
+    try:
+        cache_file.write_text(json.dumps(cache_data, indent=2))
+        log.info("Wrote %d domains to %s", len(domains), cache_file)
+    except OSError as exc:
+        log.error("Could not write cache %s: %s", cache_file, exc)
 
 
 if __name__ == "__main__":

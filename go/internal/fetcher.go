@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -100,68 +101,59 @@ func (g *GitAPIClient) diffURL(owner, repo, sha string) string {
 	}
 }
 
+// paceThreshold: below this many remaining requests, spawn pacing kicks in
+// so the window outlasts the reset time instead of slamming the wall.
+const paceThreshold = 200
+
 func (g *GitAPIClient) checkRateLimit() {
 	g.rateMu.Lock()
-	defer g.rateMu.Unlock()
-	if g.rateLimit > 0 {
+	remaining := g.rateLimit
+	reset := g.rateReset
+	g.rateMu.Unlock()
+
+	now := time.Now()
+	if remaining <= 0 && now.Before(reset) {
+		wait := reset.Sub(now) + time.Second
+		log.Printf("Rate limit exhausted, sleeping %.0fs", wait.Seconds())
+		time.Sleep(wait)
 		return
 	}
-	now := time.Now()
-	if now.Before(g.rateReset) {
-		sleep := g.rateReset.Sub(now) + time.Second
-		log.Printf("Rate limit exhausted, sleeping %.0fs", sleep.Seconds())
-		g.rateMu.Unlock()
-		time.Sleep(sleep)
-		g.rateMu.Lock()
+	if remaining < paceThreshold && now.Before(reset) {
+		pace := reset.Sub(now) / time.Duration(maxInt(remaining, 1))
+		if pace > 50*time.Millisecond {
+			if pace > 30*time.Second {
+				pace = 30 * time.Second
+			}
+			time.Sleep(pace)
+		}
 	}
-	g.rateLimit = 5000
-	g.rateReset = time.Now().Add(time.Hour)
 }
 
-// proactiveRateCheck queries the GitHub rate_limit API when nearing exhaustion.
-func (g *GitAPIClient) proactiveRateCheck() {
+// updateRateFromHeaders tracks the authoritative x-ratelimit-* response
+// headers instead of guessing counters.
+func (g *GitAPIClient) updateRateFromHeaders(resp *http.Response) {
 	if g.ForgeType != "github" {
 		return
 	}
 	g.rateMu.Lock()
-	if g.rateLimit > 100 {
-		g.rateMu.Unlock()
-		return
+	defer g.rateMu.Unlock()
+	if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			g.rateLimit = n
+		}
 	}
-	g.rateMu.Unlock()
+	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			g.rateReset = time.Unix(n, 0)
+		}
+	}
+}
 
-	req, err := http.NewRequest("GET", GHAPIBase+"/rate_limit", nil)
-	if err != nil {
-		return
+func maxInt(a, b int) int {
+	if a > b {
+		return a
 	}
-	req.Header.Set("User-Agent", UserAgent)
-	if g.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+g.Token)
-	}
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return
-	}
-	var body struct {
-		Resources struct {
-			Core struct {
-				Remaining int     `json:"remaining"`
-				Reset     float64 `json:"reset"`
-			} `json:"core"`
-		} `json:"resources"`
-	}
-	if json.NewDecoder(resp.Body).Decode(&body) != nil {
-		return
-	}
-	g.rateMu.Lock()
-	g.rateLimit = body.Resources.Core.Remaining
-	g.rateReset = time.Unix(int64(body.Resources.Core.Reset), 0)
-	g.rateMu.Unlock()
+	return b
 }
 
 func (g *GitAPIClient) decRateLimit() {
@@ -172,101 +164,74 @@ func (g *GitAPIClient) decRateLimit() {
 }
 
 func (g *GitAPIClient) fetchWithAuth(urlStr string, acceptHeader string) (string, error) {
-	g.checkRateLimit()
-
-	req, err := http.NewRequest("GET", urlStr, nil)
+	body, status, err := g.fetchWithAuthAndStatus(urlStr, acceptHeader)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", UserAgent)
-	if acceptHeader != "" {
-		req.Header.Set("Accept", acceptHeader)
+	if status != 200 {
+		return "", fmt.Errorf("HTTP %d", status)
 	}
-
-	ft := g.ForgeType
-	if g.Token != "" {
-		switch ft {
-		case "gitlab":
-			req.Header.Set("PRIVATE-TOKEN", g.Token)
-		case "azure_devops":
-			auth := base64Encode(":" + g.Token)
-			req.Header.Set("Authorization", "Basic "+auth)
-		default:
-			req.Header.Set("Authorization", "Bearer "+g.Token)
-		}
-	}
-
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}()
-
-	g.decRateLimit()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != 200 {
-		if resp.StatusCode == 403 || resp.StatusCode == 429 {
-			g.rateMu.Lock()
-			g.rateLimit = 0
-			g.rateReset = time.Now().Add(time.Minute)
-			g.rateMu.Unlock()
-		}
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	return string(body), nil
+	return body, nil
 }
 
+// fetchWithAuthAndStatus performs a GET with rate-limit pacing, header-based
+// budget tracking, and retries with backoff for 403/429/5xx/transport errors.
 func (g *GitAPIClient) fetchWithAuthAndStatus(urlStr, acceptHeader string) (string, int, error) {
-	req, err := http.NewRequest("GET", urlStr, nil)
-	if err != nil {
-		return "", 0, err
-	}
-	req.Header.Set("User-Agent", UserAgent)
-	if acceptHeader != "" {
-		req.Header.Set("Accept", acceptHeader)
-	}
-
 	ft := g.ForgeType
-	if g.Token != "" {
-		switch ft {
-		case "gitlab":
-			req.Header.Set("PRIVATE-TOKEN", g.Token)
-		case "azure_devops":
-			auth := base64Encode(":" + g.Token)
-			req.Header.Set("Authorization", "Basic "+auth)
-		default:
-			req.Header.Set("Authorization", "Bearer "+g.Token)
+	var lastErr error
+
+	for attempt := 0; attempt < 5; attempt++ {
+		g.checkRateLimit()
+
+		req, err := http.NewRequest("GET", urlStr, nil)
+		if err != nil {
+			return "", 0, err
 		}
-	}
+		req.Header.Set("User-Agent", UserAgent)
+		if acceptHeader != "" {
+			req.Header.Set("Accept", acceptHeader)
+		}
+		if g.Token != "" {
+			switch ft {
+			case "gitlab":
+				req.Header.Set("PRIVATE-TOKEN", g.Token)
+			case "azure_devops":
+				req.Header.Set("Authorization", "Basic "+base64Encode(":"+g.Token))
+			default:
+				req.Header.Set("Authorization", "Bearer "+g.Token)
+			}
+		}
 
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return "", 0, err
-	}
-	defer func() {
-		io.Copy(io.Discard, resp.Body)
+		resp, err := g.client.Do(req)
+		if err != nil {
+			lastErr = err
+			sleepBackoff(attempt, "")
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
-	}()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", 0, err
+		g.updateRateFromHeaders(resp)
+		g.decRateLimit()
+
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode == 200 {
+			return string(body), 200, nil
+		}
+		if resp.StatusCode == 403 || resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncateStr(string(body), 200))
+			sleepBackoff(attempt, resp.Header.Get("Retry-After"))
+			continue
+		}
+		return string(body), resp.StatusCode, nil
 	}
-	if resp.StatusCode == 403 || resp.StatusCode == 429 {
-		g.rateMu.Lock()
-		g.rateLimit = 0
-		g.rateReset = time.Now().Add(time.Minute)
-		g.rateMu.Unlock()
+	if lastErr == nil {
+		lastErr = fmt.Errorf("request failed after retries: %s", urlStr)
 	}
-	return string(body), resp.StatusCode, nil
+	return "", 0, lastErr
 }
 
 func base64Encode(s string) string {
@@ -349,9 +314,6 @@ func (g *GitAPIClient) FetchCommitMessage(owner, repo, sha string) (string, erro
 		return g.fetchCodeCommitMsg(owner, repo, sha)
 	}
 
-	g.checkRateLimit()
-	g.proactiveRateCheck()
-
 	url := g.commitURL(owner, repo, sha)
 	accept := "application/vnd.github.v3+json"
 	if g.ForgeType == "gitlab" {
@@ -362,7 +324,6 @@ func (g *GitAPIClient) FetchCommitMessage(owner, repo, sha string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	g.decRateLimit()
 
 	if statusCode == 200 {
 		msg := g.extractMessage(body, g.ForgeType)
@@ -378,7 +339,6 @@ func (g *GitAPIClient) FetchCommitMessage(owner, repo, sha string) (string, erro
 		return "", fmt.Errorf("unable to parse commit message from %s", url)
 	}
 	if statusCode == 403 || statusCode == 429 {
-		g.proactiveRateCheck()
 		return "", fmt.Errorf("rate limited (HTTP %d)", statusCode)
 	}
 	if statusCode == 404 {

@@ -49,10 +49,17 @@ class LLMBackend:
             text = self._call(prompt).strip()
             text = re.sub(r"^```(?:json)?\s*|```\s*$", "", text).strip()
             data = json.loads(text)
-            return {int(k): ("suspicious" if v else "clean") for k, v in data.items()}
+            out: dict[int, Classification] = {}
+            for k, v in data.items():
+                try:
+                    idx = int(k)
+                except (TypeError, ValueError):
+                    continue  # malformed key — skip rather than lose the batch
+                out[idx] = "suspicious" if v else "clean"
+            return out
         except Exception as exc:
             log.warning("LLM batch classify failed: %s", exc)
-            return {i: "ambiguous" for i in range(len(messages))}
+            return {}  # empty = total failure; caller must not cache results
 
     def _call(self, prompt: str) -> str:
         raise NotImplementedError
@@ -292,17 +299,27 @@ class BatchClassifier(CommitClassifier):
             else:
                 ambiguous_queue.append((i, msg))
 
-        # Send ALL ambiguous messages to the LLM backend in one shot
+        # Send ALL ambiguous messages to the LLM backend in one shot.
+        # On LLM failure the results stay "clean" but are NOT cached —
+        # caching would poison every future run with false negatives.
         if ambiguous_queue and self.llm is not None:
             llm_msgs = [msg for _, msg in ambiguous_queue]
-            batch_results = self.llm.classify_batch(llm_msgs)
+            try:
+                batch_results = self.llm.classify_batch(llm_msgs)
+            except Exception as exc:
+                log.warning("LLM batch classify error: %s — results not cached", exc)
+                batch_results = None
 
-            for list_idx, (orig_idx, msg) in enumerate(ambiguous_queue):
-                res = batch_results.get(list_idx, "ambiguous")
-                final_res: Classification = "suspicious" if res == "suspicious" else "clean"
-                results[orig_idx] = final_res
-                self.cache[msg.strip().lower()] = final_res
-                self._stats["llm"] += 1
+            if batch_results:
+                for list_idx, (orig_idx, msg) in enumerate(ambiguous_queue):
+                    res = batch_results.get(list_idx, "clean")
+                    final_res: Classification = "suspicious" if res == "suspicious" else "clean"
+                    results[orig_idx] = final_res
+                    self.cache[msg.strip().lower()] = final_res
+                    self._stats["llm"] += 1
+            else:
+                for idx, _msg in ambiguous_queue:
+                    results[idx] = "clean"   # uncached — retriable next run
         else:
             for idx, msg in ambiguous_queue:
                 results[idx] = "clean"

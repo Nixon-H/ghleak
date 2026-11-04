@@ -214,7 +214,9 @@ func (b *BatchClassifier) ClassifyBatch(messages []string) []Classification {
 		}
 	}
 
-	// Batch LLM call for all ambiguous
+	// Batch LLM call for all ambiguous messages.
+	// On LLM failure results stay Clean but are NOT cached — caching them
+	// would poison every future run with false negatives.
 	if len(ambiguous) > 0 && b.hasLLM {
 		var llmMsgs []string
 		for _, p := range ambiguous {
@@ -222,7 +224,8 @@ func (b *BatchClassifier) ClassifyBatch(messages []string) []Classification {
 		}
 		batchResult, err := b.llm.ClassifyBatch(llmMsgs)
 		if err != nil {
-			log.Printf("LLM batch error: %v", err)
+			log.Printf("LLM batch error: %v — results not cached", err)
+			batchResult = nil
 		}
 		for listIdx, p := range ambiguous {
 			res := Clean
@@ -230,11 +233,11 @@ func (b *BatchClassifier) ClassifyBatch(messages []string) []Classification {
 				if r, ok := batchResult[listIdx]; ok && r == Suspicious {
 					res = Suspicious
 				}
+				b.mu.Lock()
+				b.cache[strings.ToLower(strings.TrimSpace(p.msg))] = res
+				b.mu.Unlock()
 			}
 			results[p.idx] = res
-			b.mu.Lock()
-			b.cache[strings.ToLower(strings.TrimSpace(p.msg))] = res
-			b.mu.Unlock()
 			b.stats["llm"]++
 		}
 	} else {

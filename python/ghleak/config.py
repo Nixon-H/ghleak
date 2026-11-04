@@ -139,4 +139,4 @@ Commit Messages:
 {messages}
 ---"""
 
-USER_AGENT = "ghleak/1.0 (security research; +https://github.com)"
+USER_AGENT = "ghleak/1.2.0 (security research; +https://github.com/Nixon-H/ghleak)"

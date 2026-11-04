@@ -4,6 +4,8 @@ Replicates the pipeline from [aydinnyunus's blog post](https://yunusaydin.org/yo
 
 **Supports:** GitHub (via GH Archive + API), GitLab (via API), and any git forge (via clone).
 
+Also ships a **built-in secret-pattern scanner** (no external binary required) and **rate-limit-aware fetching** — see below.
+
 ## How it works
 
 ```
@@ -27,6 +29,34 @@ Regex-first, AI-fallback approach:
 
 Suspicious commits get their diff fetched via GitHub API, then scanned with `trufflehog --only-verified`. TruffleHog's verifiers build real authentication requests against the issuing service.
 
+### Built-in secret patterns (no TruffleHog required)
+
+Every diff is *also* scanned by a zero-dependency pattern engine that matches credential **values** directly. This works even when the `trufflehog` binary is not installed, and its candidates are merged with TruffleHog's findings (TruffleHog stays authoritative; builtin hits are `verified=false`).
+
+| Family | Patterns |
+|---|---|
+| GitHub | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_` |
+| GitLab | `glpat-` |
+| AWS | `AKIA`/`ASIA`/`ABIA`/`ACCA` key IDs, 40-char secret keys (context-gated) |
+| Google | `AIza…` API keys |
+| LLM providers | `sk-ant-…` (Anthropic), `sk-…T3BlbkFJ…` / `sk-proj-…` (OpenAI) |
+| Messaging | `xox[abprs]-` (Slack), Telegram bot tokens |
+| Payments | `[rs]k_live_…` (Stripe), `shpat_…` (Shopify), `EAAA…` (Square) |
+| Email/ops | `SG.…` (SendGrid), `SK…` (Twilio), `heroku_…`, `npm_…`, `pypi-…` |
+| Tokens | JWTs (`eyJ….eyJ….`), Firebase Cloud Messaging keys |
+
+Placeholder guards reject `ghp_YOUR_TOKEN_HERE`-style examples, and each hit is redacted (`ghp_AbcDef…`) before it reaches logs or reports.
+
+### Rate limits
+
+The tool is designed to *not* burn through API budgets:
+
+- **Authoritative accounting** — every response's `x-ratelimit-remaining` and `x-ratelimit-reset` headers update the budget; no guessed counters.
+- **Proactive pacing** — under 200 remaining requests, calls are spread so the budget lasts until the reset instead of slamming into the wall.
+- **Retry-After honored** — 403/429 responses wait exactly as long as the server asks.
+- **Exponential backoff with jitter** — 403/429/5xx and transport errors retry up to 5 times; commits are no longer silently dropped.
+- **LLM calls** retry 429/5xx with backoff too, and a failed batch never poisons the classifier cache with false "clean" results.
+
 ### Phase 4: Remediation
 
 Rotate at the issuer first (not in the file), then clean git history with `git-filter-repo`. Pre-commit hooks (`trufflehog` as a pre-commit hook) block the next one.
@@ -47,7 +77,7 @@ Or from source: `pip install -e ./python`
 ### Go (from source)
 
 ```bash
-go install github.com/nixon-h/ghleak/go@latest
+go install github.com/Nixon-H/ghleak/go@latest
 # Binary will be at $GOPATH/bin/ghleak
 ```
 
@@ -58,7 +88,9 @@ cd ghleak/go
 go build -o ghleak .
 ```
 
-**Requires:** `trufflehog` binary in `PATH` for both versions.
+**Requires:** `trufflehog` binary in `PATH` for both versions — optional since
+v1.2.0: without it, the built-in pattern scanner still reports candidates
+(marked unverified).
 
 Needs a GitHub token (set `GITHUB_TOKEN` env var) for commit message and diff fetching. Without one, rate limits are 60 req/hr — effectively unusable for archive scanning.
 

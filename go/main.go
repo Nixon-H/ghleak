@@ -6,9 +6,9 @@ import (
 	"log"
 	"os"
 	"strings"
-	"github.com/nixon/ghleak/go/cmd"
+	"github.com/Nixon-H/ghleak/go/cmd"
 
-	"github.com/nixon/ghleak/go/internal"
+	"github.com/Nixon-H/ghleak/go/internal"
 )
 
 func main() {

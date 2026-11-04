@@ -1,3 +1,21 @@
+ghleak (1.2.0-0kali1) kali-dev; urgency=medium
+
+  * Built-in secret pattern scanner (ghp_, gho_, github_pat_, AKIA, AIza,
+    sk-ant-, sk-, xox*- , glpat-, SG., JWT, private key formats) that works
+    with or without a trufflehog binary; candidates merge with verified
+    findings.
+  * Rate-limit handling rework: authoritative x-ratelimit-* header tracking,
+    proactive pacing under 200 remaining, Retry-After support, exponential
+    backoff with jitter on 403/429/5xx, retries instead of silent drops.
+  * LLM backends retry 429/5xx with backoff; failed batches no longer poison
+    the classifier cache with false "clean" entries.
+  * Fixes: --no-only-verified now possible, LLM provider auto-detect order,
+    commit owner/repo validation, CSV file handle, corporate cache path,
+    squareup.com typo, archive end-hour arithmetic.
+  * Go module path corrected to github.com/Nixon-H/ghleak/go.
+
+ -- Nixon-H <nixon@example.com>  Wed, 04 Nov 2026 12:00:00 +0000
+
 ghleak (1.1.0-0kali1) kali-dev; urgency=medium
 
   * Initial release

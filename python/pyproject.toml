@@ -1,7 +1,7 @@
 [project]
 name = "ghleak"
-version = "1.1.0"
-description = "Multi-forge secret leak scanner — GH Archive + regex-first classification + TruffleHog verification"
+version = "1.2.0"
+description = "Multi-forge secret leak scanner — GH Archive + regex-first classification + built-in pattern detection + TruffleHog verification"
 requires-python = ">=3.10"
 dependencies = [
     "httpx",

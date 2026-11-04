@@ -4,16 +4,34 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Set, Tuple
 
 log = logging.getLogger("ghleak.corporate")
 
 
+def cache_path() -> Path:
+    """Where the corporate-targets cache lives.
+
+    Prefers a user-writable cache dir (~/.cache/ghleak or $XDG_CACHE_HOME);
+    falls back to a file next to this module when that is unavailable.
+    """
+    base = os.getenv("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    user = Path(base) / "ghleak" / "corporate_targets.json"
+    try:
+        user.parent.mkdir(parents=True, exist_ok=True)
+        if user.exists() or os.access(user.parent, os.W_OK):
+            return user
+    except OSError:
+        pass
+    return Path(__file__).parent / "corporate_targets.json"
+
+
 class CorporateTargetFilter:
     def __init__(self, enterprise_only: bool = False):
         self.enterprise_only = enterprise_only
-        self.cache_file = Path(__file__).parent / "corporate_targets.json"
+        self.cache_file = cache_path()
 
         self.target_domains: Set[str] = {
             "google.com", "microsoft.com", "amazon.com", "amzn.com", "apple.com",
@@ -27,7 +45,7 @@ class CorporateTargetFilter:
             "databricks.com", "confluent.io", "elastic.co", "mongodb.com", "redis.com",
             "jpmorganchase.com", "jpmc.com", "goldmansachs.com", "morganstanley.com",
             "bankofamerica.com", "bofa.com", "citigroup.com", "citi.com", "wellsfargo.com",
-            "stripe.com", "paypal.com", "squareups.com", "block.xyz", "visa.com", "mastercard.com",
+            "stripe.com", "paypal.com", "squareup.com", "block.xyz", "visa.com", "mastercard.com",
             "att.com", "verizon.com", "t-mobile.com", "vodafone.com", "uber.com", "lyft.com",
             "lockheedmartin.com", "boeing.com", "raytheon.com", "rtx.com", "ge.com", "siemens.com",
         }

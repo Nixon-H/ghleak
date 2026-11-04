@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nixon/ghleak/go/internal"
+	"github.com/Nixon-H/ghleak/go/internal"
 )
 
 // ScanConfig holds parameters for scan/monitor commands.

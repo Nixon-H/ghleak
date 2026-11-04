@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -61,42 +63,80 @@ type openAIResponse struct {
 	Choices []openAIChoice `json:"choices"`
 }
 
+// sleepBackoff sleeps with exponential backoff plus jitter, honoring the
+// server's Retry-After header when present. Shared by LLM and API clients.
+func sleepBackoff(attempt int, retryAfter string) {
+	delay := float64(time.Second) * math.Min(math.Pow(2, float64(attempt)), 60)
+	delay *= 0.5 + rand.Float64() // jitter: 50%-150%
+	if retryAfter != "" {
+		if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && secs > 0 {
+			if float64(secs)*float64(time.Second) > delay {
+				delay = float64(secs) * float64(time.Second)
+			}
+		}
+	}
+	time.Sleep(time.Duration(delay))
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
 func (b *OpenAIBackend) doRequest(req openAIRequest) (string, error) {
 	data, err := json.Marshal(req)
 	if err != nil {
 		return "", fmt.Errorf("llm marshal: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", b.Endpoint, bytes.NewReader(data))
-	if err != nil {
-		return "", fmt.Errorf("llm request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if b.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+b.APIKey)
-	}
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		httpReq, err := http.NewRequest("POST", b.Endpoint, bytes.NewReader(data))
+		if err != nil {
+			return "", fmt.Errorf("llm request: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if b.APIKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+b.APIKey)
+		}
 
-	resp, err := b.Client.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("llm do: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := b.Client.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("llm do: %w", err)
+			sleepBackoff(attempt, "")
+			continue
+		}
+		respData, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("llm read: %w", readErr)
+			continue
+		}
 
-	respData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("llm read: %w", err)
-	}
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("llm HTTP %d: %s", resp.StatusCode, truncateStr(string(respData), 200))
+			sleepBackoff(attempt, resp.Header.Get("Retry-After"))
+			continue
+		}
+		if resp.StatusCode != 200 {
+			return "", fmt.Errorf("llm HTTP %d: %s", resp.StatusCode, truncateStr(string(respData), 200))
+		}
 
-	var openAIResp openAIResponse
-	if err := json.Unmarshal(respData, &openAIResp); err != nil {
-		return "", fmt.Errorf("llm decode: %w", err)
+		var openAIResp openAIResponse
+		if err := json.Unmarshal(respData, &openAIResp); err != nil {
+			return "", fmt.Errorf("llm decode: %w", err)
+		}
+		if len(openAIResp.Choices) == 0 {
+			return "", fmt.Errorf("llm no choices")
+		}
+		return strings.TrimSpace(openAIResp.Choices[0].Message.Content), nil
 	}
-
-	if len(openAIResp.Choices) == 0 {
-		return "", fmt.Errorf("llm no choices")
+	if lastErr == nil {
+		lastErr = fmt.Errorf("llm request failed after retries")
 	}
-
-	return strings.TrimSpace(openAIResp.Choices[0].Message.Content), nil
+	return "", lastErr
 }
 
 func (b *OpenAIBackend) classifyOne(msg string) (Classification, error) {

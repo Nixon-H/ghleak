@@ -1,4 +1,4 @@
-module github.com/nixon/ghleak/go
+module github.com/Nixon-H/ghleak/go
 
 go 1.25.0
 
