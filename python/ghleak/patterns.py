@@ -229,6 +229,10 @@ def scan_text(text: str) -> list[PatternFinding]:
                 value = m.group(1) if pat.capture_group and m.lastindex else m.group(0)
                 if not value:
                     continue
+                # Template placeholders ({token}) and regex sources ([A-Za-z])
+                # are not secret values — skip pseudo-matches.
+                if any(c in value for c in "{}[]()\\|<>"):
+                    continue
                 start = m.start(1) if pat.capture_group and m.lastindex else m.start(0)
                 if start > 0 and (line[start - 1].isalnum() or line[start - 1] in "_-"):
                     continue

@@ -170,6 +170,11 @@ func isTokenChar(b byte) bool {
 
 // validateCandidate applies the guards that RE2 cannot express inline.
 func validateCandidate(p secretPattern, line string, start int, value string) bool {
+	// Template placeholders ({token}) and regex sources ([A-Za-z]) are not
+	// secret values — skip pseudo-matches.
+	if strings.ContainsAny(value, "{}[]()\\|<>") {
+		return false
+	}
 	if start > 0 && isTokenChar(line[start-1]) {
 		return false // left boundary
 	}
